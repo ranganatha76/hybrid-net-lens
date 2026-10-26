@@ -184,7 +184,7 @@ sequenceDiagram
             API-->>Client: 201 with report and Location
         else Storage failure
             Disk-->>API: Error
-            API-->>Client: 503; report acknowledgement withheld
+            API-->>Client: 503, report acknowledgement withheld
         end
         API->>Gate: Release slot
     end
