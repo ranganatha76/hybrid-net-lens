@@ -1,0 +1,10 @@
+/bin/
+/data/
+/.secrets/
+/coverage.out
+/coverage.html
+/config.local.json
+/.test-env/
+*.test
+*.prof
+.DS_Store

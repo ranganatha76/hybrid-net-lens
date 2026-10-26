@@ -1,0 +1,20 @@
+{
+  "listen": "127.0.0.1:8080",
+  "data_dir": "./data",
+  "allowed_cidrs": ["127.0.0.1/32"],
+  "timeout_ms": 2000,
+  "run_timeout_ms": 30000,
+  "attempts": 3,
+  "max_concurrent": 4,
+  "max_reports": 1000,
+  "targets": [
+    {
+      "id": "local-agent",
+      "host": "127.0.0.1",
+      "port": 8080,
+      "protocol": "http",
+      "path": "/healthz",
+      "expected_status": 200
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+.git
+.github
+.secrets
+bin
+data
+coverage.*
+config.local.json
+.test-env
+*.prof
+*.test

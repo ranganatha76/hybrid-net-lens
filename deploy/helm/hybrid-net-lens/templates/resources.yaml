@@ -1,0 +1,185 @@
+{{- $auth := required "auth.existingSecret is required; provision a random token in key token" .Values.auth.existingSecret -}}
+{{- $tls := required "tls.existingSecret is required; provision a valid TLS certificate and key" .Values.tls.existingSecret -}}
+{{- if not .Values.config.targets }}{{ fail "config.targets must explicitly name authorized endpoints" }}{{ end -}}
+{{- if not .Values.config.allowed_cidrs }}{{ fail "config.allowed_cidrs must explicitly authorize destinations" }}{{ end -}}
+{{- if lt (int .Values.terminationGracePeriodSeconds) (add (div (int .Values.config.run_timeout_ms) 1000) 15) }}{{ fail "termination grace must exceed run_timeout_ms by at least 15 seconds" }}{{ end -}}
+{{- $config := mergeOverwrite (deepCopy .Values.config) (dict "listen" "0.0.0.0:8080" "data_dir" "/data/reports" "tls_cert_file" "/etc/hybrid-net-lens/tls/tls.crt" "tls_key_file" "/etc/hybrid-net-lens/tls/tls.key") -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}
+data:
+  config.json: {{ $config | toJson | quote }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if ne .Values.storage.storageClassName nil }}
+  storageClassName: {{ .Values.storage.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.size }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+      annotations:
+        checksum/config: {{ $config | toJson | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+        sysctls:
+          - name: net.ipv4.ping_group_range
+            value: "10001 10001"
+      containers:
+        - name: agent
+          {{- if .Values.image.digest }}
+          image: {{ printf "%s@%s" .Values.image.repository .Values.image.digest | quote }}
+          {{- else }}
+          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}
+          {{- end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: HYBRID_NET_LENS_TOKEN_FILE
+              value: /etc/hybrid-net-lens/auth/token
+          ports:
+            - name: https
+              containerPort: 8080
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          startupProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /readyz
+              port: https
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+            periodSeconds: 20
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: config
+              mountPath: /etc/hybrid-net-lens/config.json
+              subPath: config.json
+              readOnly: true
+            - name: auth
+              mountPath: /etc/hybrid-net-lens/auth
+              readOnly: true
+            - name: tls
+              mountPath: /etc/hybrid-net-lens/tls
+              readOnly: true
+            - name: reports
+              mountPath: /data
+            - name: temporary
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}
+        - name: auth
+          secret:
+            secretName: {{ $auth }}
+            defaultMode: 0440
+        - name: tls
+          secret:
+            secretName: {{ $tls }}
+            defaultMode: 0440
+        - name: reports
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}
+        - name: temporary
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: https
+      port: 8080
+      targetPort: https
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.clientPodLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.dnsNamespaceLabels | nindent 14 }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.dnsPodLabels | nindent 14 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- range .Values.config.allowed_cidrs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.networkPolicy.peerPodLabels }}
+    - to: {{ list (dict "podSelector" (dict "matchLabels" .)) | toJson }}
+    {{- end }}

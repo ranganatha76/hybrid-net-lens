@@ -1,0 +1,192 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hybrid-net-lens
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hybrid-net-lens
+  namespace: hybrid-net-lens
+data:
+  config.json: |
+    {
+      "listen": "0.0.0.0:8080",
+      "data_dir": "/data/reports",
+      "allowed_cidrs": ["10.20.0.10/32"],
+      "timeout_ms": 2000,
+      "run_timeout_ms": 30000,
+      "attempts": 3,
+      "max_concurrent": 4,
+      "max_reports": 1000,
+      "tls_cert_file": "/etc/hybrid-net-lens/tls/tls.crt",
+      "tls_key_file": "/etc/hybrid-net-lens/tls/tls.key",
+      "targets": [
+        {"id": "internal-api", "host": "10.20.0.10", "port": 443, "protocol": "tls"}
+      ]
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hybrid-net-lens
+  namespace: hybrid-net-lens
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hybrid-net-lens
+  namespace: hybrid-net-lens
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: hybrid-net-lens
+  template:
+    metadata:
+      labels:
+        app: hybrid-net-lens
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 50
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+        sysctls:
+          - name: net.ipv4.ping_group_range
+            value: "10001 10001"
+      containers:
+        - name: agent
+          image: hybrid-net-lens:local
+          imagePullPolicy: IfNotPresent
+          args: ["serve", "-config", "/etc/hybrid-net-lens/config.json"]
+          env:
+            - name: HYBRID_NET_LENS_TOKEN_FILE
+              value: /etc/hybrid-net-lens/auth/token
+          ports:
+            - name: https
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /readyz
+              port: https
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+            periodSeconds: 20
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: config
+              mountPath: /etc/hybrid-net-lens/config.json
+              subPath: config.json
+              readOnly: true
+            - name: auth
+              mountPath: /etc/hybrid-net-lens/auth
+              readOnly: true
+            - name: tls
+              mountPath: /etc/hybrid-net-lens/tls
+              readOnly: true
+            - name: reports
+              mountPath: /data
+            - name: temporary
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: hybrid-net-lens
+        - name: auth
+          secret:
+            secretName: hybrid-net-lens-auth
+            defaultMode: 0440
+        - name: tls
+          secret:
+            secretName: hybrid-net-lens-tls
+            defaultMode: 0440
+        - name: reports
+          persistentVolumeClaim:
+            claimName: hybrid-net-lens
+        - name: temporary
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hybrid-net-lens
+  namespace: hybrid-net-lens
+spec:
+  selector:
+    app: hybrid-net-lens
+  ports:
+    - name: https
+      port: 8080
+      targetPort: https
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hybrid-net-lens
+  namespace: hybrid-net-lens
+spec:
+  podSelector:
+    matchLabels:
+      app: hybrid-net-lens
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              hybrid-net-lens-client: "true"
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 10.20.0.10/32
+      ports:
+        - protocol: TCP
+          port: 443

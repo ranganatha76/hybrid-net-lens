@@ -1,0 +1,36 @@
+image:
+  repository: hybrid-net-lens
+  tag: "0.2.0"
+  digest: ""
+  pullPolicy: IfNotPresent
+auth:
+  existingSecret: ""
+tls:
+  existingSecret: ""
+storage:
+  size: 2Gi
+  storageClassName: null
+terminationGracePeriodSeconds: 140
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: "1"
+    memory: 256Mi
+networkPolicy:
+  peerPodLabels: {}
+  clientPodLabels:
+    hybrid-net-lens-client: "true"
+  dnsNamespaceLabels:
+    kubernetes.io/metadata.name: kube-system
+  dnsPodLabels:
+    k8s-app: kube-dns
+config:
+  allowed_cidrs: []
+  timeout_ms: 2000
+  run_timeout_ms: 30000
+  attempts: 3
+  max_concurrent: 4
+  max_reports: 1000
+  targets: []
