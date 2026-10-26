@@ -21,10 +21,20 @@ type fakeResolver struct {
 	err       error
 }
 
+// LookupNetIP supplies deterministic DNS results for engine tests.
+// It implements the same lookup method used by the production resolver interface.
+// Context, network, and hostname inputs do not affect this configured test double.
+// The stored address slice and error are returned directly without network activity.
+// Tests use it to exercise policy rejection, lookup failures, and address pinning.
 func (resolver fakeResolver) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) {
 	return resolver.addresses, resolver.err
 }
 
+// testEngine creates a bounded engine and matching target for a local test server.
+// It extracts the listener host and port from the HTTP or HTTPS server URL.
+// The default target checks /health over HTTP and expects status 200.
+// Configuration permits only IPv4 loopback and uses temporary storage and short limits.
+// Setup errors fail the calling test; successful setup returns both engine and target.
 func testEngine(t *testing.T, serverURL string) (*Engine, config.Target) {
 	t.Helper()
 	host, portValue, err := net.SplitHostPort(strings.TrimPrefix(strings.TrimPrefix(serverURL, "https://"), "http://"))
@@ -41,6 +51,11 @@ func testEngine(t *testing.T, serverURL string) (*Engine, config.Target) {
 	return engine, target
 }
 
+// TestHTTPHealthyAndRedirect exercises expected, redirect, and error HTTP responses.
+// Each subtest runs real local TCP and HTTP probes against its own server.
+// Status 200 must produce a healthy report, while 302 and 503 must fail.
+// Responses advertise a separate redirect destination with a counted handler.
+// The final assertion verifies that diagnostics never follow that redirect.
 func TestHTTPHealthyAndRedirect(t *testing.T) {
 	var redirected atomic.Int64
 	destination := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) { redirected.Add(1) }))
@@ -67,6 +82,11 @@ func TestHTTPHealthyAndRedirect(t *testing.T) {
 	}
 }
 
+// TestPolicyChecksEveryAddressBeforeDial verifies authorization precedes all dialing.
+// A fake hostname resolves to both an allowed loopback address and a metadata address.
+// The reserved metadata destination must invalidate the whole resolution set.
+// The report must contain only the resolution check, with no TCP probe attempted.
+// An ADDRESS_DENIED finding confirms that mixed DNS answers fail closed.
 func TestPolicyChecksEveryAddressBeforeDial(t *testing.T) {
 	engine, target := testEngine(t, "http://127.0.0.1:12345")
 	target.Host = "service.example"
@@ -77,6 +97,11 @@ func TestPolicyChecksEveryAddressBeforeDial(t *testing.T) {
 	}
 }
 
+// TestDNSFailure checks how resolver errors propagate into diagnostic evidence.
+// It replaces a configured hostname lookup with a deterministic failing resolver.
+// Running the engine must stop before attempting any transport-level probes.
+// The resulting report must have failed status instead of a healthy default.
+// Its first finding must identify DNS_FAILED as the reason for the failure.
 func TestDNSFailure(t *testing.T) {
 	engine, target := testEngine(t, "http://127.0.0.1:12345")
 	target.Host = "service.example"
@@ -87,6 +112,11 @@ func TestDNSFailure(t *testing.T) {
 	}
 }
 
+// TestHTTPDialUsesResolvedAddress verifies numeric dialing preserves hostname identity.
+// A local HTTP server checks the original configured hostname in the Host header.
+// The target hostname is deliberately unresolvable by normal external DNS.
+// An injected resolver maps it to the authorized loopback server address.
+// A healthy report proves the HTTP transport uses the pinned address successfully.
 func TestHTTPDialUsesResolvedAddress(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if !strings.HasPrefix(request.Host, "unresolvable.invalid:") {
@@ -103,6 +133,11 @@ func TestHTTPDialUsesResolvedAddress(t *testing.T) {
 	}
 }
 
+// TestTLSRejectsUntrustedCertificate exercises normal certificate trust enforcement.
+// It starts a local HTTPS server using the test server's untrusted certificate.
+// The diagnostic target is changed to HTTPS while retaining the local endpoint.
+// Running diagnostics must fail rather than bypassing certificate verification.
+// The report must identify TLS_FAILED before an HTTP health check can succeed.
 func TestTLSRejectsUntrustedCertificate(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer server.Close()
@@ -114,6 +149,11 @@ func TestTLSRejectsUntrustedCertificate(t *testing.T) {
 	}
 }
 
+// TestDeadlineAndCancellation verifies probes stop when their context budget expires.
+// A local handler waits until the request context is canceled instead of replying.
+// The ordinary run must fail within the asserted one-second upper bound.
+// A second run receives a context that has already been explicitly canceled.
+// That run must report incomplete status rather than misrepresenting partial evidence.
 func TestDeadlineAndCancellation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) { <-request.Context().Done() }))
 	defer server.Close()
@@ -130,6 +170,11 @@ func TestDeadlineAndCancellation(t *testing.T) {
 	}
 }
 
+// TestTCPUnreachable checks reporting when no listener accepts the target connection.
+// It builds an engine from a local server address and then closes that server.
+// All configured TCP attempts therefore target the now-unavailable endpoint.
+// The report must fail and contain exactly one aggregated reachability finding.
+// That finding must use TCP_UNREACHABLE rather than a TLS or HTTP failure code.
 func TestTCPUnreachable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	engine, target := testEngine(t, server.URL)

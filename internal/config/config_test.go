@@ -8,6 +8,11 @@ import (
 	"testing"
 )
 
+// TestPolicy checks address authorization and unconditional reserved-address blocks.
+// It builds an allowlist containing ordinary private and intentionally sensitive ranges.
+// Private, loopback, and normalized IPv4-mapped destinations must be accepted as configured.
+// Metadata, platform, multicast, unspecified, and out-of-policy addresses must be denied.
+// Unrestricted, malformed, and IPv4-mapped CIDR definitions must also be rejected.
 func TestPolicy(t *testing.T) {
 	policy, err := NewPolicy([]string{"10.0.0.0/8", "127.0.0.1/32", "169.254.0.0/16", "100.64.0.0/10", "168.63.129.16/32", "fd00::/8", "224.0.0.0/4"})
 	if err != nil {
@@ -30,6 +35,11 @@ func TestPolicy(t *testing.T) {
 	}
 }
 
+// TestLoadStrict verifies that malformed configuration input fails closed.
+// Each case is written to its own temporary configuration file.
+// Cases include unknown fields, multiple JSON values, and an incompatible field type.
+// An oversized whitespace-padded document exercises the bounded file read.
+// Every input must return an error rather than silently producing a configuration.
 func TestLoadStrict(t *testing.T) {
 	for _, content := range []string{`{"unknown":1}`, `{} {}`, `{"listen": 3}`, "{}" + strings.Repeat(" ", 1<<20)} {
 		path := filepath.Join(t.TempDir(), "config.json")
@@ -42,6 +52,11 @@ func TestLoadStrict(t *testing.T) {
 	}
 }
 
+// TestValidate starts with a complete valid HTTPS diagnostic configuration.
+// It confirms that the baseline passes before applying individual invalid mutations.
+// Mutations cover listener ports, attempt counts, incomplete TLS, and duplicate IDs.
+// Additional cases reject malformed target hosts and unsafe HTTP path syntax.
+// Every mutated configuration must fail validation without changing the valid baseline.
 func TestValidate(t *testing.T) {
 	valid := Config{Listen: "127.0.0.1:8080", DataDir: "data", AllowedCIDRs: []string{"127.0.0.1/32"}, TimeoutMS: 100, RunTimeoutMS: 1000, Attempts: 2, MaxConcurrent: 2, MaxReports: 10, Targets: []Target{{ID: "local", Host: "localhost", Port: 443, Protocol: "https", Path: "/health", ExpectedStatus: 200}}}
 	if err := valid.Validate(); err != nil {
@@ -65,6 +80,11 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// TestMeasurementBudgets verifies the limits placed on active network traffic.
+// A fixed-IP configuration enabling throughput, UDP loss, and MTU must validate.
+// Substituting a hostname must fail because active peers must remain pinned.
+// Excessive rates, invalid durations or ports, and unsafe MTU bounds must fail.
+// An empty measurement configuration must also fail instead of enabling implicit tests.
 func TestMeasurementBudgets(t *testing.T) {
 	valid := Measurements{Throughput: true, UDPLoss: true, MTU: true, IPerfPort: 5201, DurationSeconds: 2, RateMbps: 5, MTUMin: 1280, MTUMax: 1500}
 	if err := valid.Validate("10.0.0.10"); err != nil {

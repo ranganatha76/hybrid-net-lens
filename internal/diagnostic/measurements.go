@@ -52,6 +52,11 @@ type boundedOutput struct {
 	exceeded bool
 }
 
+// Write appends subprocess output only while the configured byte limit permits.
+// It checks the current buffer length plus the entire incoming write before appending.
+// An oversized write sets the exceeded flag and returns an error without partial storage.
+// Successful writes delegate to the underlying buffer and report its byte count.
+// The command runner inspects the flag to reject probes that exceed output budgets.
 func (output *boundedOutput) Write(data []byte) (int, error) {
 	if output.data.Len()+len(data) > output.maximum {
 		output.exceeded = true
@@ -60,6 +65,11 @@ func (output *boundedOutput) Write(data []byte) (int, error) {
 	return output.data.Write(data)
 }
 
+// runCommand executes a probe directly with arguments and context cancellation.
+// The child receives only PATH and fixed locale settings, excluding API token variables.
+// Captured stdout is limited to 1 MiB and stderr to 16 KiB, with bounded wait delay.
+// Output overflow and context cancellation take precedence over ordinary exit errors.
+// Failed ping probes include stderr so MTU logic can recognize packet-too-big evidence.
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, name, args...)
 	command.WaitDelay = time.Second
@@ -80,6 +90,11 @@ func runCommand(ctx context.Context, name string, args ...string) ([]byte, error
 	return stdout.data.Bytes(), err
 }
 
+// CheckDependencies verifies tools required by explicitly enabled active tests.
+// Throughput or UDP loss measurements require an iperf3 executable on PATH.
+// MTU measurements require Linux and a discoverable ping executable.
+// Required executable names are deduplicated across all configured targets.
+// Baseline-only configurations need no external tools and pass without these binaries.
 func CheckDependencies(cfg config.Config) error {
 	required := map[string]bool{}
 	for _, target := range cfg.Targets {
@@ -104,6 +119,11 @@ func CheckDependencies(cfg config.Config) error {
 	return nil
 }
 
+// measure appends explicitly requested active-test evidence to an existing report.
+// It normalizes the validated literal peer and attempts the engine's single test slot.
+// Contention records MEASUREMENT_BUSY immediately instead of queueing more traffic.
+// Enabled throughput, UDP loss, and MTU tests run sequentially while context allows.
+// Failures and observed UDP loss add findings; deferred release always frees the slot.
 func (engine *Engine) measure(ctx context.Context, target config.Target, report *Report) {
 	target.Host = netip.MustParseAddr(target.Host).Unmap().String()
 	select {
@@ -154,6 +174,11 @@ type iperfOutput struct {
 	} `json:"end"`
 }
 
+// iperf runs a rate-capped upload measurement against the configured literal peer.
+// TCP mode reports receiver goodput; UDP mode uses fixed 1200-byte payloads.
+// Arguments include the approved port, duration, bitrate, and connection timeout.
+// Output must be one JSON value with a valid receiver summary and finite statistics.
+// The returned check contains either throughput or loss evidence, or a specific error.
 func (engine *Engine) iperf(ctx context.Context, host string, measurement config.Measurements, udp bool) Check {
 	started := time.Now()
 	phase := "throughput"
@@ -208,8 +233,18 @@ func (engine *Engine) iperf(ctx context.Context, host string, measurement config
 	return check
 }
 
+// finite determines whether a floating-point measurement is numerically finite.
+// It rejects NaN values, which cannot support meaningful measurement comparisons.
+// It also rejects positive and negative infinity from probe statistics.
+// Zero and finite negative values pass this helper and need field-specific validation.
+// The result supports validation of duration, bitrate, and jitter before reporting them.
 func finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
 
+// mtu searches a configured packet-size interval using Linux DF ICMP echo probes.
+// It selects IPv4 or IPv6 payload overhead and requires the minimum size to reply.
+// A binary search advances confirmed sizes or narrows on explicit packet-too-big errors.
+// Missing replies and command timeouts remain inconclusive rather than implying an MTU.
+// The check reports probe count and either a bounded estimate or a confirmed lower bound.
 func (engine *Engine) mtu(ctx context.Context, host string, measurement config.Measurements) Check {
 	started := time.Now()
 	check := Check{Phase: "mtu", Address: host, MTU: &MTUResult{SearchCeilingBytes: measurement.MTUMax, Confidence: "inconclusive"}}

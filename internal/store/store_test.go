@@ -12,6 +12,11 @@ import (
 	"hybrid-net-lens/internal/diagnostic"
 )
 
+// TestPersistenceRetentionAndConcurrentAccess verifies storage under concurrent callers.
+// Twelve workers save unique reports and list summaries against one shared store.
+// Reopening the directory must recover exactly the configured three retained reports.
+// Every retained report must be readable and have owner-only 0600 file permissions.
+// A path-traversal identifier must return ErrNotFound instead of reading outside storage.
 func TestPersistenceRetentionAndConcurrentAccess(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "reports")
 	storage, err := New(dir, 3)
@@ -54,6 +59,11 @@ func TestPersistenceRetentionAndConcurrentAccess(t *testing.T) {
 	}
 }
 
+// TestRejectInsecureDirectory checks owner-only storage directory enforcement.
+// It creates a temporary report directory with group and other read/execute permissions.
+// The path otherwise exists and is a normal directory suitable for the test.
+// Store construction must reject those permissions before accepting the directory.
+// The test guards against exposing persisted diagnostic evidence to other local users.
 func TestRejectInsecureDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "reports")
 	if err := os.Mkdir(dir, 0755); err != nil {
@@ -64,6 +74,11 @@ func TestRejectInsecureDirectory(t *testing.T) {
 	}
 }
 
+// TestRejectCorruptAndSymlinkReports exercises defensive persisted-report loading.
+// A report-shaped file first contains a valid-looking document followed by extra JSON.
+// Reading that identifier must fail because trailing data is not accepted.
+// The file is then replaced with a symbolic link pointing outside the report directory.
+// The same read must fail again rather than following the symlink as a regular report.
 func TestRejectCorruptAndSymlinkReports(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "reports")
 	storage, err := New(dir, 3)

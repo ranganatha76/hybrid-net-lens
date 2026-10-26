@@ -26,12 +26,22 @@ import (
 
 var version = "dev"
 
+// main starts the command-line application with process-level cancellation.
+// It creates a context canceled by an interrupt or SIGTERM signal.
+// It forwards command arguments and standard output streams to execute.
+// It registers signal cleanup for normal return from this function.
+// It terminates the process with the exit code returned by the command.
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	os.Exit(execute(ctx, os.Args[1:], os.Stdout, os.Stderr))
 }
 
+// execute dispatches validate, run, serve, and version commands.
+// It parses command-specific flags and loads the strict JSON configuration.
+// Diagnostic commands check dependencies before creating a probe engine.
+// A run writes its report to stdout; serve starts the authenticated API.
+// It returns 0 for success, 2 for unhealthy reports, and 1 for command errors.
 func execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "Usage: hybrid-net-lens <validate|run|serve|version> [flags]")
@@ -118,6 +128,11 @@ func execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// serve assembles report storage, authentication, and the diagnostic HTTP API.
+// It validates listener security before loading the token or opening storage.
+// The HTTP server applies bounded timeouts, header limits, and TLS settings.
+// It serves until a listener error occurs or the supplied context is canceled.
+// Cancellation drains requests with a deadline and returns shutdown failures.
 func serve(ctx context.Context, cfg config.Config, engine *diagnostic.Engine, insecure bool, logger *slog.Logger) error {
 	if err := validateListener(cfg, insecure); err != nil {
 		return err
@@ -180,6 +195,11 @@ func serve(ctx context.Context, cfg config.Config, engine *diagnostic.Engine, in
 	}
 }
 
+// validateListener checks whether the selected transport can be exposed.
+// A configured TLS certificate permits listeners on non-loopback addresses.
+// The explicit insecure override also permits them for trusted TLS proxies.
+// Without either condition, the host must be a literal loopback IP address.
+// Invalid addresses and externally reachable plaintext listeners return errors.
 func validateListener(cfg config.Config, insecure bool) error {
 	if cfg.TLSCertFile != "" || insecure {
 		return nil
@@ -195,6 +215,11 @@ func validateListener(cfg config.Config, insecure bool) error {
 	return nil
 }
 
+// loadToken obtains the API bearer token from one configured environment source.
+// It accepts a direct token or a file path, but rejects simultaneous sources.
+// File reads are bounded to detect inputs larger than the 4096-byte limit.
+// Whitespace is trimmed from file contents before checking for an empty token.
+// It returns the token or an error without including the token in that error.
 func loadToken() (string, error) {
 	value := os.Getenv("HYBRID_NET_LENS_TOKEN")
 	path := os.Getenv("HYBRID_NET_LENS_TOKEN_FILE")

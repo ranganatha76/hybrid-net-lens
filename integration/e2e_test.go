@@ -29,6 +29,11 @@ import (
 	"hybrid-net-lens/internal/diagnostic"
 )
 
+// command runs an external integration-test tool with a three-minute deadline.
+// Arguments are passed directly to the executable rather than through a shell.
+// Combined stdout and stderr are captured for failure diagnostics.
+// A nonzero exit or context failure immediately fails the calling test.
+// Successful output is returned as text with leading and trailing whitespace removed.
 func command(t *testing.T, name string, args ...string) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -40,12 +45,22 @@ func command(t *testing.T, name string, args ...string) string {
 	return strings.TrimSpace(string(output))
 }
 
+// cleanup performs a best-effort external cleanup action for integration resources.
+// It uses a fresh background context so test-request cancellation cannot prevent cleanup.
+// A 30-second deadline bounds a stalled container or cluster cleanup command.
+// Arguments are executed directly without shell interpolation.
+// Exit errors are ignored so cleanup does not replace the original test failure.
 func cleanup(name string, args ...string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	exec.CommandContext(ctx, name, args...).Run()
 }
 
+// credentials creates temporary TLS material and a random bearer token for tests.
+// It generates a short-lived P-256 certificate authority and signed server certificate.
+// The leaf certificate covers loopback plus the caller's requested DNS identities.
+// Certificate, key, CA, and token files are written inside the test's temporary directory.
+// It returns that directory, an isolated CA trust pool, and the token for API requests.
 func credentials(t *testing.T, names []string) (string, *x509.CertPool, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -91,10 +106,20 @@ func credentials(t *testing.T, names []string) (string, *x509.CertPool, string) 
 	return dir, roots, token
 }
 
+// clientFor constructs an HTTPS client that trusts the supplied test CA pool.
+// Normal certificate verification remains enabled with TLS 1.2 as the minimum version.
+// A 45-second timeout bounds each full HTTP operation.
+// Keep-alives are disabled so requests use fresh transport connections.
+// The returned client is used for readiness, authentication, report, and metrics checks.
 func clientFor(roots *x509.CertPool) *http.Client {
 	return &http.Client{Timeout: 45 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, DisableKeepAlives: true}}
 }
 
+// request sends a JSON integration request and asserts its expected HTTP status.
+// It builds the request from the supplied method, URL, and optional body bytes.
+// Nonempty tokens are attached as Bearer credentials without logging them here.
+// The response body is closed after reading at most 2 MiB into memory.
+// Transport, read, or status failures fail the test; success returns the response bytes.
 func request(t *testing.T, client *http.Client, method, address, token string, body []byte, status int) []byte {
 	t.Helper()
 	input, err := http.NewRequest(method, address, bytes.NewReader(body))
@@ -120,6 +145,11 @@ func request(t *testing.T, client *http.Client, method, address, token string, b
 	return data
 }
 
+// awaitReady waits for an integration service to return 200 from its readiness route.
+// A 200-millisecond ticker spaces repeated HTTPS readiness requests.
+// Connection errors and non-200 responses are retried while the wait context allows.
+// Every received response body is closed to avoid leaking connections during startup.
+// A 45-second wait context ends the loop with a test failure when readiness never arrives.
 func awaitReady(t *testing.T, client *http.Client, address string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -143,6 +173,11 @@ func awaitReady(t *testing.T, client *http.Client, address string) {
 	}
 }
 
+// TestContainerEndToEnd verifies the built image in an isolated Docker environment.
+// It provisions a private iperf peer, temporary TLS credentials, and persistent volumes.
+// The agent runs non-root with a read-only root filesystem and all capabilities dropped.
+// Requests verify TLS, authentication, TCP, throughput, UDP loss, and MTU evidence.
+// Restart recovery, protected metrics, token-log redaction, and resource cleanup complete the test.
 func TestContainerEndToEnd(t *testing.T) {
 	image := os.Getenv("HYBRID_NET_LENS_TEST_IMAGE")
 	if image == "" {
@@ -215,6 +250,11 @@ func TestContainerEndToEnd(t *testing.T) {
 	t.Logf("Verified TLS, auth, TCP, throughput, UDP delivery loss, MTU, restart persistence, and token redaction; report %s", report.ID)
 }
 
+// Example_measurementBudget illustrates the maximum configured benchmark payload budget.
+// It uses the allowed upper rate of 20 megabits per second over ten seconds.
+// Dividing the resulting megabit total by eight expresses the nominal payload in megabytes.
+// The example describes one benchmark rather than total wire overhead or all tests combined.
+// Its expected-output assertion keeps the displayed budget explanation executable.
 func Example_measurementBudget() {
 	fmt.Println("20 Mbps * 10 seconds / 8 = 25 MB maximum target payload per benchmark")
 	// Output: 20 Mbps * 10 seconds / 8 = 25 MB maximum target payload per benchmark

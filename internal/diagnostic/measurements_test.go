@@ -11,6 +11,11 @@ import (
 	"hybrid-net-lens/internal/config"
 )
 
+// TestIPerfJSONAndBudget exercises argument safety and receiver statistic decoding.
+// Its command double verifies the executable, literal destination, and configured rate.
+// A fixed receiver summary must produce the expected TCP Mbps and UDP loss percentage.
+// Invalid, empty, trailing, or error-bearing output must never yield a successful check.
+// All measurements run through the fake command runner without generating network traffic.
 func TestIPerfJSONAndBudget(t *testing.T) {
 	engine, _ := testEngine(t, "http://127.0.0.1:12345")
 	measurement := config.Measurements{Throughput: true, UDPLoss: true, IPerfPort: 5201, DurationSeconds: 1, RateMbps: 5}
@@ -35,6 +40,11 @@ func TestIPerfJSONAndBudget(t *testing.T) {
 	}
 }
 
+// TestMTUBoundaryAndTimeout simulates a Linux path with a 1400-byte packet boundary.
+// The command double accepts smaller packets and returns explicit too-big evidence above it.
+// Search results must confirm 1400, reject 1401, and stay within the probe-count budget.
+// Replacing replies with generic failures must produce no successful MTU estimate.
+// Switching the engine platform to Darwin must reject Linux-specific probing outright.
 func TestMTUBoundaryAndTimeout(t *testing.T) {
 	engine, _ := testEngine(t, "http://127.0.0.1:12345")
 	engine.platform = "linux"
@@ -65,6 +75,11 @@ func TestMTUBoundaryAndTimeout(t *testing.T) {
 	}
 }
 
+// TestMTULowerBound checks interpretation when every configured packet size succeeds.
+// It uses a Linux engine with a command double that accepts every ping probe.
+// The search interval spans 1280 through 1500 bytes.
+// The largest confirmed result must reach the configured 1500-byte ceiling.
+// Confidence must remain lower_bound because no larger packet was explicitly rejected.
 func TestMTULowerBound(t *testing.T) {
 	engine, _ := testEngine(t, "http://127.0.0.1:12345")
 	engine.platform = "linux"
@@ -75,6 +90,11 @@ func TestMTULowerBound(t *testing.T) {
 	}
 }
 
+// TestBoundedCommandOutput verifies enforcement of the subprocess buffer budget.
+// It constructs a capture buffer with a deliberately small four-byte maximum.
+// A single five-byte write attempts to exceed that budget.
+// The writer must return an error instead of accepting the oversized data.
+// Its exceeded flag must also be set for the command runner's final overflow check.
 func TestBoundedCommandOutput(t *testing.T) {
 	output := &boundedOutput{maximum: 4}
 	if _, err := output.Write([]byte("12345")); err == nil || !output.exceeded {
@@ -82,6 +102,11 @@ func TestBoundedCommandOutput(t *testing.T) {
 	}
 }
 
+// TestMissingDependency checks that active measurements fail preflight without tools.
+// It replaces PATH with an empty temporary directory for the duration of the test.
+// A throughput-enabled configuration must fail because iperf3 cannot be discovered.
+// An empty baseline-only configuration must not require that executable.
+// Environment isolation avoids depending on tools installed on the developer machine.
 func TestMissingDependency(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	cfg := config.Config{Targets: []config.Target{{Measurements: &config.Measurements{Throughput: true}}}}
@@ -93,6 +118,11 @@ func TestMissingDependency(t *testing.T) {
 	}
 }
 
+// TestNormalizedMeasurementPeer verifies normalization before an active command is built.
+// The configured peer uses the IPv4-mapped IPv6 representation of loopback.
+// A command double requires the actual iperf argument to be plain IPv4 loopback.
+// It returns a valid receiver summary so the throughput measurement can complete.
+// The report must contain one successful measurement check using that normalized peer.
 func TestNormalizedMeasurementPeer(t *testing.T) {
 	engine, target := testEngine(t, "http://127.0.0.1:12345")
 	target.Host = "::ffff:127.0.0.1"

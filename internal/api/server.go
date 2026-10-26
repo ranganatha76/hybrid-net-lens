@@ -46,6 +46,11 @@ type runState struct {
 	healthy  bool
 }
 
+// New builds an API service from validated configuration and required dependencies.
+// It requires a 32..512-character printable ASCII bearer token without whitespace.
+// Runner, report storage, and structured logger must all be supplied by the caller.
+// Only the token's SHA-256 hash is retained for subsequent authentication checks.
+// Admission slots, per-target cooldowns, and latest-result state start empty.
 func New(cfg config.Config, runner Runner, storage *store.Store, token string, logger *slog.Logger) (*Service, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -59,6 +64,11 @@ func New(cfg config.Config, runner Runner, storage *store.Store, token string, l
 	return &Service{cfg: cfg, runner: runner, storage: storage, logger: logger, tokenHash: sha256.Sum256([]byte(token)), slots: make(chan struct{}, cfg.MaxConcurrent), lastRun: make(map[string]time.Time), latest: make(map[string]runState)}, nil
 }
 
+// Handler assembles public health endpoints and authenticated diagnostic API routes.
+// Readiness checks storage, while targets, reports, runs, and metrics require a token.
+// An outer wrapper adds request IDs, no-cache headers, and content-type protection.
+// Requests are counted and logged by matched route without logging authorization values.
+// Panic recovery logs the event and emits a JSON error if no response was started.
 func (service *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(writer http.ResponseWriter, request *http.Request) {
@@ -102,6 +112,11 @@ func (service *Service) Handler() http.Handler {
 	})
 }
 
+// authorize wraps a handler with mandatory bearer-token authentication.
+// It extracts the Authorization header and requires the exact Bearer prefix.
+// The provided token is hashed before constant-time comparison with the stored hash.
+// Invalid credentials receive a JSON 401 response and a WWW-Authenticate challenge.
+// Only authenticated requests reach the wrapped handler; token values are not logged here.
 func (service *Service) authorize(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		value := request.Header.Get("Authorization")
@@ -116,6 +131,11 @@ func (service *Service) authorize(next http.Handler) http.Handler {
 	})
 }
 
+// run accepts one bounded JSON request naming an already configured diagnostic target.
+// It rejects unknown fields, extra JSON, unsupported media types, and unknown target IDs.
+// Nonblocking concurrency admission and a five-second target cooldown limit workload.
+// The request context bounds execution, and storage must save the completed report.
+// Only persisted reports receive 201 and a Location header, regardless of diagnostic health.
 func (service *Service) run(writer http.ResponseWriter, request *http.Request) {
 	if strings.Split(request.Header.Get("Content-Type"), ";")[0] != "application/json" {
 		writeError(writer, http.StatusUnsupportedMediaType, "content_type", "Use application/json.")
@@ -183,6 +203,11 @@ func (service *Service) run(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, http.StatusCreated, report)
 }
 
+// get returns one persisted report selected by the route's report ID.
+// Identifier validation and bounded report reading are delegated to the store.
+// Missing, invalid, or retention-expired identifiers map to a JSON 404 response.
+// Other storage failures return 503 rather than exposing an unreadable report.
+// Successfully loaded reports are serialized with HTTP 200 in the standard JSON format.
 func (service *Service) get(writer http.ResponseWriter, request *http.Request) {
 	report, err := service.storage.Get(request.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
@@ -196,6 +221,11 @@ func (service *Service) get(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, http.StatusOK, report)
 }
 
+// list returns recent persisted report summaries in a JSON reports envelope.
+// The default result limit is 20 unless the request supplies a limit query value.
+// Explicit limits must parse as integers between one and 100 inclusive.
+// Storage selects and orders the summaries; failures produce a JSON 503 response.
+// Invalid limits return 400 before the store is queried.
 func (service *Service) list(writer http.ResponseWriter, request *http.Request) {
 	limit := 20
 	if value := request.URL.Query().Get("limit"); value != "" {
@@ -214,6 +244,11 @@ func (service *Service) list(writer http.ResponseWriter, request *http.Request) 
 	writeJSON(writer, http.StatusOK, map[string]any{"reports": reports})
 }
 
+// metrics writes the service's Prometheus text-format counters and gauges.
+// Atomic counters expose requests, started runs, and failed report saves.
+// Current admission-slot occupancy supplies the active diagnostic request gauge.
+// A mutex protects per-target latest persisted health and completion timestamps.
+// Targets without a persisted result in this process do not emit latest-run samples.
 func (service *Service) metrics(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	fmt.Fprintf(writer, "# HELP hybrid_net_lens_requests_total HTTP requests received.\n# TYPE hybrid_net_lens_requests_total counter\nhybrid_net_lens_requests_total %d\n# HELP hybrid_net_lens_runs_total Diagnostic runs started.\n# TYPE hybrid_net_lens_runs_total counter\nhybrid_net_lens_runs_total %d\n# HELP hybrid_net_lens_active_runs Currently active diagnostic requests.\n# TYPE hybrid_net_lens_active_runs gauge\nhybrid_net_lens_active_runs %d\n# HELP hybrid_net_lens_storage_errors_total Failed report saves.\n# TYPE hybrid_net_lens_storage_errors_total counter\nhybrid_net_lens_storage_errors_total %d\n", service.requests.Load(), service.runs.Load(), len(service.slots), service.storageErrors.Load())
@@ -237,6 +272,11 @@ type responseWriter struct {
 	wrote  bool
 }
 
+// WriteHeader tracks the first status sent through the response wrapper.
+// Repeated header writes are ignored once a response has already started.
+// The chosen status is retained for request logging and panic recovery decisions.
+// The wrote flag records that an explicit or implicit response has begun.
+// The first status is forwarded unchanged to the underlying HTTP response writer.
 func (writer *responseWriter) WriteHeader(status int) {
 	if writer.wrote {
 		return
@@ -244,6 +284,12 @@ func (writer *responseWriter) WriteHeader(status int) {
 	writer.status, writer.wrote = status, true
 	writer.ResponseWriter.WriteHeader(status)
 }
+
+// Write sends response body bytes while keeping status tracking consistent.
+// If headers have not been written, it first records and sends HTTP 200.
+// Existing response statuses are preserved when writing additional body data.
+// Payload bytes are delegated unchanged to the underlying HTTP response writer.
+// The method returns that writer's byte count and error without additional buffering.
 func (writer *responseWriter) Write(data []byte) (int, error) {
 	if !writer.wrote {
 		writer.WriteHeader(http.StatusOK)
@@ -251,12 +297,22 @@ func (writer *responseWriter) Write(data []byte) (int, error) {
 	return writer.ResponseWriter.Write(data)
 }
 
+// writeJSON emits a value using the API's JSON response content type.
+// It sets UTF-8 JSON headers before sending the supplied HTTP status.
+// The standard encoder serializes the value directly to the response stream.
+// Encoding appends a newline and does not buffer or retry an already started response.
+// Callers supply JSON-compatible values; this helper does not return encoding errors.
 func writeJSON(writer http.ResponseWriter, status int, data any) {
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.WriteHeader(status)
 	json.NewEncoder(writer).Encode(data)
 }
 
+// writeError emits the API's consistent nested JSON error envelope.
+// It pairs a machine-readable error code with a caller-provided human message.
+// The caller selects the HTTP status appropriate to the rejected operation.
+// Serialization and JSON content-type handling are delegated to writeJSON.
+// It sends no raw error objects, stack traces, or additional diagnostic report fields.
 func writeError(writer http.ResponseWriter, status int, code, message string) {
 	writeJSON(writer, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
 }

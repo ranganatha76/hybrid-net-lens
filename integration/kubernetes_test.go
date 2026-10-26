@@ -21,6 +21,11 @@ import (
 	"hybrid-net-lens/internal/diagnostic"
 )
 
+// writeJSONFile serializes a Kubernetes test object or Helm values document to disk.
+// The standard JSON encoder preserves nested maps, lists, and scalar values structurally.
+// Encoding errors fail the calling test before any manifest can be applied.
+// Successful output is written to the requested path with owner-only file creation mode.
+// Filesystem write failures also fail setup rather than leaving tests to use missing input.
 func writeJSONFile(t *testing.T, path string, value any) {
 	t.Helper()
 	data, err := json.Marshal(value)
@@ -32,6 +37,11 @@ func writeJSONFile(t *testing.T, path string, value any) {
 	}
 }
 
+// testPod builds a Kubernetes Pod manifest for a restricted integration helper.
+// The caller supplies its identity, container image, network-policy labels, and command.
+// The pod runs as UID/GID 10001 without a mounted service account token.
+// Container security drops all capabilities and disallows escalation on a read-only root.
+// A bounded memory-backed /tmp volume provides the only explicitly configured writable mount.
 func testPod(name, image string, labels map[string]string, args []string) map[string]any {
 	return map[string]any{
 		"apiVersion": "v1", "kind": "Pod", "metadata": map[string]any{"name": name, "labels": labels},
@@ -48,6 +58,11 @@ func testPod(name, image string, labels map[string]string, args []string) map[st
 	}
 }
 
+// TestKubernetesDeployment verifies the Helm release inside the isolated kind test cluster.
+// It refuses other contexts and creates a restricted namespace, Secrets, and helper pods.
+// A TLS-authenticated run must produce successful throughput, UDP loss, and MTU checks.
+// Positive and timeout-based negative connections verify authorized ingress and egress policy.
+// A rollout restart must preserve the stored report on its PVC before test cleanup runs.
 func TestKubernetesDeployment(t *testing.T) {
 	kubeconfig := os.Getenv("HYBRID_NET_LENS_TEST_KUBECONFIG")
 	if kubeconfig == "" {
