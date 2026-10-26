@@ -13,21 +13,61 @@ replacement for packet captures and infrastructure logs.
 Requires Go 1.26.10 or newer (security-patched standard library). No external Go
 library dependencies. Baseline checks need no elevated privileges; optional active
 checks require `iperf3` and Linux iputils `ping`, included in the container image.
+Baseline checks run on macOS and Linux; MTU measurements require Linux, such as
+the provided container. This project is a CLI/API backend, with no web UI.
+
+### 1. Build and Start the Agent
+
+Open a terminal in the repository root. For the existing local workspace, run
+`cd /Users/rd21342/ANF/hybrid-net-lens`; elsewhere, use your clone's directory.
 
 ```sh
+go version
 make check
 make build
 ./bin/hybrid-net-lens validate -config config.example.json
-export HYBRID_NET_LENS_TOKEN="$(openssl rand -hex 32)"
+
+umask 077
+mkdir -p .secrets
+chmod 700 .secrets
+if [ ! -f .secrets/api-token ]; then
+  openssl rand -hex -out .secrets/api-token 32
+fi
+chmod 600 .secrets/api-token
+unset HYBRID_NET_LENS_TOKEN
+export HYBRID_NET_LENS_TOKEN_FILE="$PWD/.secrets/api-token"
 ./bin/hybrid-net-lens serve -config config.example.json
 ```
 
-The agent listens at `http://127.0.0.1:8080`. In a second terminal, use the same
-token through your secret manager or terminal environment. Do not paste secrets
-into shared logs, command histories, or tickets.
+Leave this terminal running. The agent listens at `http://127.0.0.1:8080`;
+stop it with `Ctrl+C`. The commands preserve an existing token file, and
+`.secrets/` is excluded from Git. Do not paste tokens into logs or tickets.
+Set only one token source: the server rejects simultaneous token and token-file
+environment variables. If port 8080 is occupied, change both `listen` and the
+example target's `port` in a local configuration, and adjust the URLs below.
+
+### 2. Check Health and Run Diagnostics
+
+Open a second terminal in the same repository root:
 
 ```sh
 curl --fail-with-body http://127.0.0.1:8080/healthz
+
+./bin/hybrid-net-lens run -config config.example.json -target local-agent
+```
+
+Health should return `{"status":"alive"}` and the CLI report should contain
+`"status": "healthy"`. The example checks the running agent's own health endpoint,
+not your cloud or on-premises network. Keep the first terminal running for this
+self-check; `run` does not start a target server.
+
+### 3. Use the Authenticated API
+
+In the second terminal, load the same token from the local file. Environment
+variables exported in the first terminal are not inherited by the second.
+
+```sh
+export HYBRID_NET_LENS_TOKEN="$(cat .secrets/api-token)"
 curl --fail-with-body -H "Authorization: Bearer ${HYBRID_NET_LENS_TOKEN}" \
   http://127.0.0.1:8080/api/v1/targets
 curl --fail-with-body --max-time 40 \
@@ -37,15 +77,32 @@ curl --fail-with-body --max-time 40 \
   http://127.0.0.1:8080/api/v1/runs
 ```
 
-The example checks the agent's own health endpoint only. For useful diagnostics,
-replace its target and CIDR with an endpoint you own or have permission to test.
-Restart the service after configuration changes.
+API-created reports are persisted under `./data` with the example configuration.
+HTTP `201` means a report was saved; inspect its `status` and `findings` to
+determine diagnostic health. Wait at least five seconds between API runs for
+the same target.
 
-To diagnose without starting an API or configuring a token:
+### 4. Test Your Own Authorized Endpoint
 
 ```sh
-./bin/hybrid-net-lens run -config config.example.json -target local-agent
+cp config.example.json config.local.json
 ```
+
+Create that local copy once, then edit its target `id`, `host`, `port`, and
+`protocol`, plus `path` and `expected_status` for HTTP(S). Set `allowed_cidrs`
+to narrow networks covering every resolved destination IP. Test only endpoints
+you own or have permission to probe. The local configuration is ignored by Git.
+
+Validate and run it, replacing `YOUR_TARGET_ID` with your configured target ID:
+
+```sh
+./bin/hybrid-net-lens validate -config config.local.json
+./bin/hybrid-net-lens run -config config.local.json -target YOUR_TARGET_ID
+```
+
+CLI diagnostics do not require an API server or token when the configured target
+is an independently running endpoint. To expose the new configuration through
+the API, stop the existing agent and restart `serve -config config.local.json`.
 
 `run` prints a JSON report and does not write to the report store. Exit codes:
 `0` healthy, `2` failed/degraded/incomplete diagnostic, `1` usage/configuration/
